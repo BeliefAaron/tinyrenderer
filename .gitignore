@@ -1,1 +1,14 @@
 framebuffer.tga
+wireFrameImage.tga
+
+.vs/
+build/
+out/
+output/
+x64/
+Tinyrenderer/
+
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user

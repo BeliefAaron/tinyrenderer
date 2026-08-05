@@ -1,5 +1,7 @@
 #include <cmath>
 #include "tgaimage.h"
+#include "model.h"
+#include "geometry.h"
 
 constexpr TGAColor white   = {255, 255, 255, 255}; // attention, BGRA order
 constexpr TGAColor green   = {  0, 255,   0, 255};
@@ -39,24 +41,32 @@ void line(int x0, int y0, int x1, int y1, TGAImage &framebuffer, TGAColor color)
 }
 
 int main(int argc, char** argv) {
-    constexpr int width  = 64;
-    constexpr int height = 64;
-    TGAImage framebuffer(width, height, TGAImage::RGB);
+    constexpr int width = 800;
+    constexpr int height = 800;
+    Model* model = nullptr;
+    if (2 == argc) {    // 命令行构造
+        model = new Model(argv[1]);
+    }
+    else {  // 代码构造
+        model = new Model("obj/african_head/african_head.obj");
+    }
+    TGAImage wireFrameImage(width, height, TGAImage::RGB);
+    for (int i = 0; i < model->nfaces(); i++) {
+        std::vector<int> face = model->face(i);
+        for (int j = 0; j < 3; j++) {
+            Vec3f v0 = model->vert(face[j]);
+            Vec3f v1 = model->vert(face[(j + 1) % 3]);
+            // 转换为屏幕坐标
+            int x0 = (v0.x + 1) * width / 2;
+            int y0 = (v0.y + 1) * height / 2;
+            int x1 = (v1.x + 1) * width / 2;
+            int y1 = (v1.y + 1) * height / 2;
 
-    int ax =  7, ay =  3;
-    int bx = 12, by = 37;
-    int cx = 62, cy = 53;
+            line(x0, y0, x1, y1, wireFrameImage, white);
+        }
+    }
+    wireFrameImage.write_tga_file("wireFrameImage.tga");
 
-    line(ax, ay, bx, by, framebuffer, blue);
-    line(cx, cy, bx, by, framebuffer, green);
-    line(cx, cy, ax, ay, framebuffer, yellow);
-    line(ax, ay, cx, cy, framebuffer, red);
-
-    framebuffer.set(ax, ay, white);
-    framebuffer.set(bx, by, white);
-    framebuffer.set(cx, cy, white);
-
-    framebuffer.write_tga_file("framebuffer.tga");
     return 0;
 }
 
