@@ -9,7 +9,7 @@ constexpr int height = 512;
 constexpr TGAColor white   = {255, 255, 255, 255}; // attention, BGRA order
 constexpr TGAColor green   = {  0, 255,   0, 255};
 constexpr TGAColor red     = {  0,   0, 255, 255};
-constexpr TGAColor blue    = {255, 128,  64, 255};
+constexpr TGAColor blue    = {255,   0,   0, 255};
 constexpr TGAColor yellow  = {  0, 200, 255, 255};
 
 std::pair<int, int> projectToScreen(const Vec3f& v) {
@@ -86,7 +86,7 @@ double signed_triangle_area(int ax, int ay, int bx, int by, int cx, int cy) {
     // 等价于 return 0.5 * ((bx - ax) * (cy - ay) - (by - ay) * (cx - ax));
 }
 
-void triangle(int ax, int ay, int bx, int by, int cx, int cy, TGAImage &framebuffer, TGAColor color) {
+void triangle(int ax, int ay, int az, int bx, int by, int bz, int cx, int cy, int cz, TGAImage &framebuffer, TGAColor color) {
     int bbminX = std::min(ax, std::min(bx, cx));
     int bbmaxX = std::max(ax, std::max(bx, cx));
     int bbminY = std::min(ay, std::min(by, cy));
@@ -99,8 +99,16 @@ void triangle(int ax, int ay, int bx, int by, int cx, int cy, TGAImage &framebuf
             double alpha = signed_triangle_area(x, y, bx, by, cx, cy) / total_area;
             double beta  = signed_triangle_area(ax, ay, x, y, cx, cy) / total_area;
             double gamma = signed_triangle_area(ax, ay, bx, by, x, y) / total_area;
-            if(alpha >= 0 && beta >= 0 && gamma >= 0) {
-                framebuffer.set(x, y, color);
+            bool bInside = alpha >= 0 && beta >= 0 && gamma >= 0;
+            // 挖空心
+            bool bNearBorder = alpha <= 0.2 || beta <= 0.2 || gamma <= 0.2;
+            if(bInside && bNearBorder) {
+                TGAColor pixelColor;
+                for(int i = 0; i < 3; i++) {
+                    // colorful triangle
+                    pixelColor.bgra[i] = static_cast<std::uint8_t>(alpha * red.bgra[i] + beta * green.bgra[i] + gamma * blue.bgra[i]);
+                }
+                framebuffer.set(x, y, pixelColor);
             }
         }
     }
@@ -114,17 +122,18 @@ int main(int argc, char** argv) {
         model = new Model("obj/african_head/african_head.obj"); //代码方式构造model
     }
     TGAImage framebuffer(width, height, TGAImage::RGB);
-    // triangle(  7, 45, 35, 100, 45,  60, framebuffer, red);
-    // triangle(120, 35, 90,   5, 45, 110, framebuffer, white);
-    // triangle(115, 83, 80,  90, 85, 120, framebuffer, green);
-    for(int i = 0; i < model->nfaces(); i++) {
-        auto [x0, y0] = projectToScreen(model->vert(model->face(i)[0]));
-        auto [x1, y1] = projectToScreen(model->vert(model->face(i)[1]));
-        auto [x2, y2] = projectToScreen(model->vert(model->face(i)[2]));
-        TGAColor rnd;
-        for (int c=0; c<3; c++) rnd[c] = std::rand()%255;
-        triangle(x0, y0, x1, y1, x2, y2, framebuffer, rnd);
-    }
+    int ax = 120, ay =  40, az =  255;
+    int bx = 400, by = 290, bz = 128;
+    int cx = 230, cy = 490, cz = 13;
+    triangle(ax, ay, az, bx, by, bz, cx, cy, cz, framebuffer, white);
+    // for(int i = 0; i < model->nfaces(); i++) {
+    //     auto [x0, y0] = projectToScreen(model->vert(model->face(i)[0]));
+    //     auto [x1, y1] = projectToScreen(model->vert(model->face(i)[1]));
+    //     auto [x2, y2] = projectToScreen(model->vert(model->face(i)[2]));
+    //     TGAColor rnd;
+    //     for (int c=0; c<3; c++) rnd[c] = std::rand()%255;
+    //     triangle(x0, y0, x1, y1, x2, y2, framebuffer, rnd);
+    // }
 
     framebuffer.write_tga_file("framebuffer.tga");
     return 0;
