@@ -12,10 +12,11 @@ constexpr TGAColor red     = {  0,   0, 255, 255};
 constexpr TGAColor blue    = {255,   0,   0, 255};
 constexpr TGAColor yellow  = {  0, 200, 255, 255};
 
-std::pair<int, int> projectToScreen(const Vec3f& v) {
+std::tuple<int, int, int> projectToScreen(const Vec3f& v) {
     return {
         static_cast<int>((v.x + 1) * width / 2),
-        static_cast<int>((v.y + 1) * height / 2)
+        static_cast<int>((v.y + 1) * height / 2),
+        static_cast<int>((v.z + 1) * 255 / 2)
     };
 }
 
@@ -86,7 +87,7 @@ double signed_triangle_area(int ax, int ay, int bx, int by, int cx, int cy) {
     // 等价于 return 0.5 * ((bx - ax) * (cy - ay) - (by - ay) * (cx - ax));
 }
 
-void triangle(int ax, int ay, int az, int bx, int by, int bz, int cx, int cy, int cz, TGAImage &framebuffer, TGAColor color) {
+void triangle(int ax, int ay, int az, int bx, int by, int bz, int cx, int cy, int cz, TGAImage &framebuffer, TGAImage &zBuffer, TGAColor color) {
     int bbminX = std::min(ax, std::min(bx, cx));
     int bbmaxX = std::max(ax, std::max(bx, cx));
     int bbminY = std::min(ay, std::min(by, cy));
@@ -100,16 +101,12 @@ void triangle(int ax, int ay, int az, int bx, int by, int bz, int cx, int cy, in
             double beta  = signed_triangle_area(ax, ay, x, y, cx, cy) / total_area;
             double gamma = signed_triangle_area(ax, ay, bx, by, x, y) / total_area;
             bool bInside = alpha >= 0 && beta >= 0 && gamma >= 0;
-            // 挖空心
-            bool bNearBorder = alpha <= 0.2 || beta <= 0.2 || gamma <= 0.2;
-            if(bInside && bNearBorder) {
-                TGAColor pixelColor;
-                for(int i = 0; i < 3; i++) {
-                    // colorful triangle
-                    pixelColor.bgra[i] = static_cast<std::uint8_t>(alpha * red.bgra[i] + beta * green.bgra[i] + gamma * blue.bgra[i]);
-                }
-                framebuffer.set(x, y, pixelColor);
-            }
+            if(!bInside) continue;
+            
+            unsigned char z = static_cast<unsigned char>(alpha * az + beta * bz + gamma * cz);
+            if(z <= zBuffer.get(x, y)[0]) continue; // z-buffer test
+            zBuffer.set(x, y, {z});
+            framebuffer.set(x, y, color);
         }
     }
 }
@@ -119,22 +116,23 @@ int main(int argc, char** argv) {
     if (2==argc) {
         model = new Model(argv[1]);  //命令行控制方式构造model
     } else {
-        model = new Model("obj/african_head/african_head.obj"); //代码方式构造model
+        model = new Model("obj/diablo3_pose/diablo3_pose.obj"); //代码方式构造model
     }
     TGAImage framebuffer(width, height, TGAImage::RGB);
-    int ax = 120, ay =  40, az =  255;
-    int bx = 400, by = 290, bz = 128;
-    int cx = 230, cy = 490, cz = 13;
-    triangle(ax, ay, az, bx, by, bz, cx, cy, cz, framebuffer, white);
-    // for(int i = 0; i < model->nfaces(); i++) {
-    //     auto [x0, y0] = projectToScreen(model->vert(model->face(i)[0]));
-    //     auto [x1, y1] = projectToScreen(model->vert(model->face(i)[1]));
-    //     auto [x2, y2] = projectToScreen(model->vert(model->face(i)[2]));
-    //     TGAColor rnd;
-    //     for (int c=0; c<3; c++) rnd[c] = std::rand()%255;
-    //     triangle(x0, y0, x1, y1, x2, y2, framebuffer, rnd);
-    // }
-
+    TGAImage zBuffer(width, height, TGAImage::GRAYSCALE);
+    // int ax = 120, ay =  40, az =  255;
+    // int bx = 400, by = 290, bz = 128;
+    // int cx = 230, cy = 490, cz = 13;
+    // triangle(ax, ay, az, bx, by, bz, cx, cy, cz, framebuffer, zBuffer, white);
+    for(int i = 0; i < model->nfaces(); i++) {
+        auto [x0, y0, z0] = projectToScreen(model->vert(model->face(i)[0]));
+        auto [x1, y1, z1] = projectToScreen(model->vert(model->face(i)[1]));
+        auto [x2, y2, z2] = projectToScreen(model->vert(model->face(i)[2]));
+        TGAColor rnd;
+        for (int c=0; c<3; c++) rnd[c] = std::rand()%255;
+        triangle(x0, y0, z0, x1, y1, z1, x2, y2, z2, framebuffer, zBuffer, rnd);
+    }
+    zBuffer.write_tga_file("zBuffer.tga");
     framebuffer.write_tga_file("framebuffer.tga");
     return 0;
 }
