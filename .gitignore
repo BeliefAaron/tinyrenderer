@@ -1,5 +1,6 @@
 framebuffer.tga
 wireFrameImage.tga
+zBuffer.tga
 
 .vs/
 build/
