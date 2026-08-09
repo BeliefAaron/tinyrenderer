@@ -1,13 +1,11 @@
-#include <iostream>
-#include <string>
 #include <fstream>
 #include <sstream>
-#include <vector>
 #include "model.h"
+#include <algorithm>
 
-Model::Model(const char *filename) : verts_(), faces_() {
+Model::Model(const std::string filename) {
     std::ifstream in;
-    in.open (filename, std::ifstream::in);
+    in.open(filename, std::ifstream::in);
     if (in.fail()) return;
     std::string line;
     while (!in.eof()) {
@@ -17,42 +15,31 @@ Model::Model(const char *filename) : verts_(), faces_() {
         if (!line.compare(0, 2, "v ")) {
             iss >> trash;
             vec3 v;
-            for (int i=0;i<3;i++) iss >> v[i];
-            verts_.push_back(v);
+            for (int i : {0,1,2}) iss >> v[i];
+            verts.push_back(v);
         } else if (!line.compare(0, 2, "f ")) {
-            std::vector<int> f;
-            int itrash, idx;
+            int f,t,n, cnt = 0;
             iss >> trash;
-            while (iss >> idx >> trash >> itrash >> trash >> itrash) {
-                idx--; // in wavefront obj all indices start at 1, not zero
-                f.push_back(idx);
+            while (iss >> f >> trash >> t >> trash >> n) {
+                facet_vrt.push_back(--f);
+                cnt++;
             }
-            faces_.push_back(f);
+            if (3!=cnt) {
+                std::cerr << "Error: the obj file is supposed to be triangulated" << std::endl;
+                return;
+            }
         }
     }
-    std::cerr << "# v# " << verts_.size() << " f# "  << faces_.size() << std::endl;
+    std::cerr << "# v# " << nverts() << " f# "  << nfaces() << std::endl;
 }
 
-Model::~Model() {
-}
+int Model::nverts() const { return verts.size(); }
+int Model::nfaces() const { return facet_vrt.size()/3; }
 
-int Model::nverts() {
-    return (int)verts_.size();
-}
-
-int Model::nfaces() {
-    return (int)faces_.size();
-}
-
-std::vector<int> Model::face(int idx) {
-    return faces_[idx];
-}
-
-vec3 Model::vert(const int i) {
-    return verts_[i];
+vec3 Model::vert(const int i) const {
+    return verts[i];
 }
 
 vec3 Model::vert(const int iface, const int nthvert) const {
-    return verts_[faces_[iface][nthvert]];
+    return verts[facet_vrt[iface*3+nthvert]];
 }
-
