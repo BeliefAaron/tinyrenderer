@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
     Model model(filename);
     RandomShader shader(model);
     for (int f=0; f<model.nfaces(); f++) {      // iterate through all facets
-        shader.color = { std::rand()%255, std::rand()%255, std::rand()%255, 255 };
+        shader.color = { static_cast<std::uint8_t>(std::rand()%256), static_cast<std::uint8_t>(std::rand()%256), static_cast<std::uint8_t>(std::rand()%256) };
         Triangle clip = { shader.vertex(f, 0),  // assemble the primitive
                             shader.vertex(f, 1),
                             shader.vertex(f, 2) };
