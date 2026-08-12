@@ -1,5 +1,6 @@
 #include "tgaimage.h"
 #include "geometry.h"
+#include "algorithm"
 
 void lookat(const vec3 eye, const vec3 center, const vec3 up);
 void init_perspective(const double f);
@@ -7,6 +8,14 @@ void init_viewport(const int x, const int y, const int w, const int h);
 void init_zbuffer(const int width, const int height);
 
 struct IShader {
+    static TGAColor sample2D (const TGAImage &img, const vec2 &uv) {
+        if(img.width() == 0 || img.height() == 0) return {};
+
+        int x = static_cast<int>(std::clamp(uv.x, 0.0, 1.0) * (img.width() - 1));
+        int y = static_cast<int>(std::clamp(uv.y, 0.0, 1.0) * (img.height() - 1));
+        
+        return img.get(x, y);
+    }
     virtual std::pair<bool,TGAColor> fragment(const vec3 bar) const = 0;
 };
 
