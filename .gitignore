@@ -1,6 +1,12 @@
 framebuffer.tga
 wireFrameImage.tga
 zBuffer.tga
+camera_zbuffer.tga
+mask.tga
+shadow_zbuffer.tga
+shadow.tga
+shadowmap.tga
+
 
 .vs/
 build/

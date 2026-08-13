@@ -3,7 +3,7 @@
 #include "model.h"
 #include <string>
 
-extern mat<4,4> ModelView, Perspective; // "OpenGL" state matrices and
+extern mat<4,4> Viewport, ModelView, Perspective; // "OpenGL" state matrices and
 extern std::vector<double> zbuffer;     // the depth buffer
 
 struct PhoneShader : IShader {
@@ -61,6 +61,48 @@ struct PhoneShader : IShader {
     }
 };
 
+struct BlankShader : IShader {
+    const Model &model;
+
+    BlankShader(const Model &m) : model(m) {
+    }
+
+    virtual vec4 vertex(const int face, const int vert) {
+        vec4 gl_Position = ModelView * model.vert(face, vert);
+        return Perspective * gl_Position;
+    }
+
+    virtual std::pair<bool,TGAColor> fragment(const vec3 bar) const {
+        return {false, {255, 255, 255, 255}};
+    }
+};
+
+void draw_zbuffer(std::string filename, std::vector<double> &zbuffer, int width, int height) {
+    TGAImage zImg(width, height, TGAImage::GRAYSCALE, {0,0,0,0});
+    double minZ = 1000, maxZ = -1000;
+    for(int x = 0; x < width; x++) {
+        for(int y = 0; y < height; y++) {
+            if(zbuffer[x + y * width] <= -999.0) continue;
+            minZ = std::min(minZ, zbuffer[x + y * width]);
+            maxZ = std::max(maxZ, zbuffer[x + y * width]);
+        }
+    }
+
+    for(int x = 0; x < width; x++) {
+        for(int y = 0; y < height; y++) {
+            double z = zbuffer[x + y * width];
+            if(z <= -999.0) continue;
+            z = (z - minZ) / (maxZ - minZ) * 255;
+            z = std::clamp(z, 0.0, 255.0);
+            auto gray = static_cast<uint8_t>(z);
+            TGAColor color = {};
+            color[0] = gray;
+            zImg.set(x, y, color);
+        }
+    }
+    zImg.write_tga_file(filename);
+}
+
 int main(int argc, char** argv) {    
     // std::string filename = argc == 2 ? argv[1] : "obj/diablo3_pose/diablo3_pose.obj";
     // std::string filename = argc == 2 ? argv[1] : "obj/african_head/african_head.obj";
@@ -72,16 +114,21 @@ int main(int argc, char** argv) {
 
     constexpr int width  = 800;      // output image size
     constexpr int height = 800;
+    constexpr int shadowW = 8000;    // shadow map size
+    constexpr int shadowH = 8000;
     constexpr vec3 light{ 1, 1, 1}; // light source 
     constexpr vec3    eye{ -1, 0, 2}; // camera position
     constexpr vec3 center{ 0, 0, 0}; // camera direction
     constexpr vec3     up{ 0, 1, 0}; // camera up vector
 
+    /** 
+     * usual rendering
+     */
     lookat(eye, center, up);                                   // build the ModelView   matrix
     init_perspective(norm(eye-center));                        // build the Perspective matrix
     init_viewport(width/16, height/16, width*7/8, height*7/8); // build the Viewport    matrix
     init_zbuffer(width, height);
-    TGAImage framebuffer(width, height, TGAImage::RGB);
+    TGAImage framebuffer(width, height, TGAImage::RGB, {177, 195, 209, 255});
     
     for(int m = 1; m < argc; m++) {
         Model model(argv[m]);
@@ -93,8 +140,80 @@ int main(int argc, char** argv) {
             rasterize(clip, shader, framebuffer);   // rasterize the primitive
         }
     }
-
     framebuffer.write_tga_file("framebuffer.tga");
+    draw_zbuffer("camera_zbuffer.tga", zbuffer, width, height);
+
+    std::vector<double> zbuffer_cached = zbuffer;
+    std::vector<bool> mask(width * height, false);
+    mat<4,4> MtoObj = (Viewport * Perspective * ModelView).invert();
+
+    /**
+     * shadow rendering
+     */
+    lookat(light, center, up);
+    init_perspective(norm(light-center));
+    init_viewport(shadowW/16, shadowH/16, shadowW*7/8, shadowH*7/8);
+    init_zbuffer(shadowW, shadowH);
+    TGAImage shadowMap(shadowW, shadowH, TGAImage::RGB, {177, 195, 209, 255});
+    
+    for(int m = 1; m < argc; m++) {
+        Model model(argv[m]);
+        BlankShader shader(model);
+        for(int f = 0; f < model.nfaces(); f++) {
+            Triangle clip = {
+                            shader.vertex(f,0),
+                            shader.vertex(f,1),
+                            shader.vertex(f,2)
+            };
+            rasterize(clip, shader, shadowMap);
+        }
+    }
+    shadowMap.write_tga_file("shadowmap.tga");
+    
+    draw_zbuffer("shadow_zbuffer.tga", zbuffer, shadowW, shadowH);
+    mat<4,4> N = Viewport * Perspective * ModelView;    // 到光源坐标系的变换矩阵
+
+    /**
+     * post processing
+     */
+    for(int x = 0; x < width; x++) {
+        for(int y = 0; y < height; y++) {
+            vec4 fragment = MtoObj * vec4{ static_cast<double>(x), static_cast<double>(y), zbuffer_cached[x + y*height], 1.};
+            vec4 fragmentInLight = N * fragment;
+            vec3 p = fragmentInLight.xyz() / fragmentInLight.w; // 阴影图坐标
+            bool shouldMasked = p.x < 0 || p.x >= shadowW || p.y < 0 || p.y >= shadowH ||  // is out of boundary
+                                p.z <= -100. || // is backgroud
+                                p.z > zbuffer[(int)p.x + (int)p.y * shadowH] - 0.03;
+            mask[x + y * width] = shouldMasked;                      
+        }
+    }
+
+    TGAImage maskImg(width, height, TGAImage::GRAYSCALE);
+    for(int x = 0; x < width; x++) {
+        for(int y = 0; y < height; y++) {
+            if(mask[x + y * width]) continue;
+            maskImg.set(x, y, {255,255,255,255});
+        }
+    }
+    maskImg.write_tga_file("mask.tga");
+
+    // limit max light intensity
+    for(int x = 0; x < width; x++) {
+        for(int y = 0; y < height; y++) {
+            if(mask[x + y * width]) continue;
+            TGAColor color = framebuffer.get(x, y);
+            vec3 a = {color[0], color[1], color[2]};
+            if(norm(a) < 80) continue;
+            a = normalized(a) * 80;
+            TGAColor limitedColor = {255,255,255,255};
+            for(int channel = 0; channel < 3; channel++) {
+                limitedColor[channel] = static_cast<uint8_t>(std::clamp(a[channel], 0.0, 255.0));
+            }
+            framebuffer.set(x, y, limitedColor);
+        }
+    }
+    framebuffer.write_tga_file("shadow.tga");
+
     return 0;
 }
 
