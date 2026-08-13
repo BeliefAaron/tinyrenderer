@@ -178,12 +178,12 @@ int main(int argc, char** argv) {
      */
     for(int x = 0; x < width; x++) {
         for(int y = 0; y < height; y++) {
-            vec4 fragment = MtoObj * vec4{ static_cast<double>(x), static_cast<double>(y), zbuffer_cached[x + y*height], 1.};
+            vec4 fragment = MtoObj * vec4{ static_cast<double>(x), static_cast<double>(y), zbuffer_cached[x + y * width], 1.};
             vec4 fragmentInLight = N * fragment;
             vec3 p = fragmentInLight.xyz() / fragmentInLight.w; // ÒõÓ°Í¼×ø±ê
             bool isLit = p.x < 0 || p.x >= shadowW || p.y < 0 || p.y >= shadowH ||  // is out of boundary
                                 p.z <= -100. || // is backgroud
-                                p.z > zbuffer[(int)p.x + (int)p.y * shadowH] - 0.03;
+                                p.z > zbuffer[(int)p.x + (int)p.y * shadowW] - 0.03;
             mask[x + y * width] = isLit;                      
         }
     }
