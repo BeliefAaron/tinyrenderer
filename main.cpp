@@ -2,6 +2,9 @@
 #include "our_gl.h"
 #include "model.h"
 #include <string>
+#include <random>
+
+#define M_PI 3.14159265358979323846
 
 extern mat<4,4> Viewport, ModelView, Perspective; // "OpenGL" state matrices and
 extern std::vector<double> zbuffer;     // the depth buffer
@@ -48,7 +51,7 @@ struct PhoneShader : IShader {
         double ambient = 0.4; // 环境光
         double diffuse = std::max(0., n*l); // 漫反射强度
         double specularMask = sample2D(model.specular(), uv)[0] / 255.;
-        double specular = specularMask * std::pow(std::max(0., r * viewDir), 32); // 镜面反射强度，因为相机在相机坐标系中的z轴正方向，所以取r.z作为视线方向与反射光的夹角余弦值
+        double specular = specularMask * std::pow(std::max(0., r * viewDir), 32); // 镜面反射强度，因为相机在相机坐标系中的z轴正方向，所以取r * viewDir作为视线方向与反射光的夹角余弦值
         double illumination = ambient + diffuse + specular;
 
         TGAColor fragColor = sample2D(model.diffuse(), uv);
@@ -114,8 +117,6 @@ int main(int argc, char** argv) {
 
     constexpr int width  = 800;      // output image size
     constexpr int height = 800;
-    constexpr int shadowW = 8000;    // shadow map size
-    constexpr int shadowH = 8000;
     constexpr vec3 light{ 1, 1, 1}; // light source 
     constexpr vec3    eye{ -1, 0, 2}; // camera position
     constexpr vec3 center{ 0, 0, 0}; // camera direction
@@ -124,95 +125,67 @@ int main(int argc, char** argv) {
     /** 
      * usual rendering
      */
-    lookat(eye, center, up);                                   // build the ModelView   matrix
-    init_perspective(norm(eye-center));                        // build the Perspective matrix
-    init_viewport(width/16, height/16, width*7/8, height*7/8); // build the Viewport    matrix
+    lookat(eye, center, up);                                   
+    init_perspective(norm(eye-center));                        
+    init_viewport(width/16, height/16, width*7/8, height*7/8); 
     init_zbuffer(width, height);
     TGAImage framebuffer(width, height, TGAImage::RGB, {177, 195, 209, 255});
     
     for(int m = 1; m < argc; m++) {
         Model model(argv[m]);
-        PhoneShader shader(light, model, eye);
-        for (int f=0; f<model.nfaces(); f++) {      // iterate through all facets
-            Triangle clip = { shader.vertex(f, 0),  // assemble the primitive
+        // PhoneShader shader(light, model, eye);
+        BlankShader shader(model);
+        for (int f=0; f<model.nfaces(); f++) {      
+            Triangle clip = { shader.vertex(f, 0),  
                                 shader.vertex(f, 1),
                                 shader.vertex(f, 2) };
-            rasterize(clip, shader, framebuffer);   // rasterize the primitive
+            rasterize(clip, shader, framebuffer);   
         }
     }
-    framebuffer.write_tga_file("framebuffer.tga");
-    draw_zbuffer("camera_zbuffer.tga", zbuffer, width, height);
-
-    std::vector<double> zbuffer_cached = zbuffer;
-    std::vector<bool> mask(width * height, false);
-    mat<4,4> MtoObj = (Viewport * Perspective * ModelView).invert();
 
     /**
-     * shadow rendering
+     * SSAO
      */
-    lookat(light, center, up);
-    init_perspective(norm(light-center));
-    init_viewport(shadowW/16, shadowH/16, shadowW*7/8, shadowH*7/8);
-    init_zbuffer(shadowW, shadowH);
-    TGAImage shadowMap(shadowW, shadowH, TGAImage::RGB, {177, 195, 209, 255});
-    
-    for(int m = 1; m < argc; m++) {
-        Model model(argv[m]);
-        BlankShader shader(model);
-        for(int f = 0; f < model.nfaces(); f++) {
-            Triangle clip = {
-                            shader.vertex(f,0),
-                            shader.vertex(f,1),
-                            shader.vertex(f,2)
-            };
-            rasterize(clip, shader, shadowMap);
-        }
-    }
-    shadowMap.write_tga_file("shadowmap.tga");
-    
-    draw_zbuffer("shadow_zbuffer.tga", zbuffer, shadowW, shadowH);
-    mat<4,4> N = Viewport * Perspective * ModelView;    // 到光源坐标系的变换矩阵
+    constexpr double aoRadius = .1;
+    constexpr int samples = 128;
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<double> dist(-aoRadius, aoRadius);
 
-    /**
-     * post processing
-     */
+    auto smoothstep = [](double edge0, double edge1, double x) {         
+            double t = std::clamp((x - edge0)/(edge1 - edge0), 0., 1.);  
+            return t*t*(3 - 2*t);                                        // Hermite interpolation inbetween. The derivative of the smoothstep function is zero at both edges.
+    };
+
+#pragma omp parallel for
     for(int x = 0; x < width; x++) {
         for(int y = 0; y < height; y++) {
-            vec4 fragment = MtoObj * vec4{ static_cast<double>(x), static_cast<double>(y), zbuffer_cached[x + y * width], 1.};
-            vec4 fragmentInLight = N * fragment;
-            vec3 p = fragmentInLight.xyz() / fragmentInLight.w; // 阴影图坐标
-            bool isLit = p.x < 0 || p.x >= shadowW || p.y < 0 || p.y >= shadowH ||  // is out of boundary
-                                p.z <= -100. || // is backgroud
-                                p.z > zbuffer[(int)p.x + (int)p.y * shadowW] - 0.03;
-            mask[x + y * width] = isLit;                      
-        }
-    }
-
-    TGAImage maskImg(width, height, TGAImage::GRAYSCALE);
-    for(int x = 0; x < width; x++) {
-        for(int y = 0; y < height; y++) {
-            if(mask[x + y * width]) continue;
-            maskImg.set(x, y, {255,255,255,255});
-        }
-    }
-    maskImg.write_tga_file("mask.tga");
-
-    // limit max light intensity
-    for(int x = 0; x < width; x++) {
-        for(int y = 0; y < height; y++) {
-            if(mask[x + y * width]) continue;
-            TGAColor color = framebuffer.get(x, y);
-            vec3 a = {color[0], color[1], color[2]};
-            if(norm(a) < 80) continue;
-            a = normalized(a) * 80;
-            TGAColor limitedColor = {255,255,255,255};
-            for(int channel = 0; channel < 3; channel++) {
-                limitedColor[channel] = static_cast<uint8_t>(std::clamp(a[channel], 0.0, 255.0));
+            double z = zbuffer[x + y*width];
+            if(z < -100) continue;
+            vec4 p = Viewport.invert() * vec4(x, y, z, 1.);  // for each pixel, project to object coordinate system 
+            double vote = 0;
+            double voters = 0;
+            for(int i = 0; i < samples; i++) {
+                vec4 sample = Viewport * (p + vec4(dist(gen), dist(gen), dist(gen), 0));    // then get samples randomly
+                if(sample.x < 0 || sample.y < 0 || sample.x >= width || sample.y >=height) continue;
+                double zp = zbuffer[(int)sample.x + (int)sample.y * width]; // get the scene's nearest depth at sample location from zbuffer
+                if(z + 5 * aoRadius < zp) continue;                       // range check to remove the dark halo
+                voters++;
+                vote += zp > sample.z;  // get masked
             }
-            framebuffer.set(x, y, limitedColor);
+            // calculate ssao value and apply it on color
+            double ssao = 1.0;
+            if(voters > 0) {
+                double occlusion = vote / voters * 0.4;
+                ssao = smoothstep(0, 1, 1 - occlusion);
+            }
+            TGAColor c = framebuffer.get(x, y);
+            c[0] *= ssao; c[1] *= ssao; c[2] *= ssao;
+            framebuffer.set(x, y, c);
         }
     }
-    framebuffer.write_tga_file("shadow.tga");
+
+    framebuffer.write_tga_file("framebuffer.tga");
 
     return 0;
 }
