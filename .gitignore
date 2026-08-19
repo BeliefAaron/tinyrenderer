@@ -8,7 +8,7 @@ shadow.tga
 shadowmap.tga
 ssao.tga
 solution.txt
-
+shadow_factor.tga
 
 .vs/
 build/

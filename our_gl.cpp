@@ -16,6 +16,10 @@ void init_perspective(const double f) {
     Perspective = {{{1,0,0,0}, {0,1,0,0}, {0,0,1,0}, {0,0, -1/f,1}}};
 }
 
+void init_orthographic() {
+    Perspective = {{{1,0,0,0}, {0,1,0,0}, {0,0,1,0}, {0,0,0,1}}};
+}
+
 void init_viewport(const int x, const int y, const int w, const int h) {
     Viewport = {{{w/2., 0, 0, x+w/2.}, {0, h/2., 0, y+h/2.}, {0,0,1,0}, {0,0,0,1}}};
 }
@@ -24,12 +28,14 @@ void init_zbuffer(const int width, const int height) {
     zbuffer = std::vector(width*height, -1000.);
 }
 
-void rasterize(const Triangle &clip, const IShader &shader, TGAImage &framebuffer, GBuffer *gbuffer) {
+void rasterize(const Triangle &clip, const IShader &shader, TGAImage &framebuffer,
+               GBuffer *gbuffer, const bool cullBackFaces) {
     vec4 ndc[3]    = { clip[0]/clip[0].w, clip[1]/clip[1].w, clip[2]/clip[2].w };                // normalized device coordinates
     vec2 screen[3] = { (Viewport*ndc[0]).xy(), (Viewport*ndc[1]).xy(), (Viewport*ndc[2]).xy() }; // screen coordinates
 
     mat<3,3> ABC = {{ {screen[0].x, screen[0].y, 1.}, {screen[1].x, screen[1].y, 1.}, {screen[2].x, screen[2].y, 1.} }};
-    if (ABC.det()<1) return; // backface culling + discarding triangles that cover less than a pixel
+    const double determinant = ABC.det();
+    if ((cullBackFaces && determinant < 1) || (!cullBackFaces && std::abs(determinant) < 1)) return;
 
     auto [bbminx,bbmaxx] = std::minmax({screen[0].x, screen[1].x, screen[2].x}); // bounding box for the triangle
     auto [bbminy,bbmaxy] = std::minmax({screen[0].y, screen[1].y, screen[2].y}); // defined by its top left and bottom right corners
@@ -54,10 +60,14 @@ void rasterize(const Triangle &clip, const IShader &shader, TGAImage &framebuffe
                 if(output.writeGeometry) {
                     gbuffer->viewPosition[index] = output.viewPosition;
                     gbuffer->viewNormal[index] = normalized(output.aoNormal);
+                    gbuffer->ambientColor[index] = output.ambientColor;
+                    gbuffer->directColor[index] = output.directColor;
                     gbuffer->valid[index] = 1;
                 } else {
                     gbuffer->viewPosition[index] = {};
                     gbuffer->viewNormal[index] = {};
+                    gbuffer->ambientColor[index] = {};
+                    gbuffer->directColor[index] = {};
                     gbuffer->valid[index] = 0;
                 }
             }

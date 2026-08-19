@@ -65,15 +65,21 @@ struct PhoneShader : IShader {
         double diffuse = std::max(0., n*l);
         double specularMask = sample2D(model.specular(), uv)[0] / 255.;
         double specular = specularMask * std::pow(std::max(0., r * viewDir), 32);
-        double illumination = ambient + diffuse + specular;
+        TGAColor texel = sample2D(model.diffuse(), uv);
+        vec3 albedo = {     // 反射率(物体固有颜色)
+            static_cast<double>(texel[0]),
+            static_cast<double>(texel[1]),
+            static_cast<double>(texel[2])
+        };
 
-        TGAColor fragColor = sample2D(model.diffuse(), uv);
-        
-        for(int channel = 0; channel < 3; channel++) {
-            double value = fragColor[channel] * illumination;
-            fragColor[channel] = static_cast<uint8_t>(std::clamp(value, 0.0, 255.0));
-        }
-        return {false, fragColor, fragPos.xyz(), aoNormal, true};
+        FragmentOutput output;
+        output.color = texel;
+        output.viewPosition = fragPos.xyz();
+        output.aoNormal = aoNormal;
+        output.ambientColor = albedo * ambient;
+        output.directColor = albedo * (diffuse + specular);
+        output.writeGeometry = true;
+        return output;
     }
 };
 
@@ -88,7 +94,7 @@ struct BlankShader : IShader {
         return Perspective * gl_Position;
     }
 
-    virtual FragmentOutput fragment(const vec3 bar) const {
+    virtual FragmentOutput fragment(const vec3) const {
         FragmentOutput output;
         output.color = {255, 255, 255, 255};
         return output;
@@ -130,22 +136,22 @@ double smoothstep(const double edge0, const double edge1, const double x) {
     return t*t*(3.-2.*t);
 }
 
-void draw_zbuffer(std::string filename, std::vector<double> &zbuffer, int width, int height) {
+void draw_zbuffer(const std::string &filename, const std::vector<double> &depthBuffer, const int width, const int height) {
     TGAImage zImg(width, height, TGAImage::GRAYSCALE, {0,0,0,0});
     double minZ = 1000, maxZ = -1000;
     for(int x = 0; x < width; x++) {
         for(int y = 0; y < height; y++) {
-            if(zbuffer[x + y * width] <= -999.0) continue;
-            minZ = std::min(minZ, zbuffer[x + y * width]);
-            maxZ = std::max(maxZ, zbuffer[x + y * width]);
+            if(depthBuffer[x + y * width] <= -999.0) continue;
+            minZ = std::min(minZ, depthBuffer[x + y * width]);
+            maxZ = std::max(maxZ, depthBuffer[x + y * width]);
         }
     }
 
     for(int x = 0; x < width; x++) {
         for(int y = 0; y < height; y++) {
-            double z = zbuffer[x + y * width];
+            double z = depthBuffer[x + y * width];
             if(z <= -999.0) continue;
-            z = (z - minZ) / (maxZ - minZ) * 255;
+            z = maxZ > minZ ? (z - minZ) / (maxZ - minZ) * 255. : 255.;
             z = std::clamp(z, 0.0, 255.0);
             auto gray = static_cast<uint8_t>(z);
             TGAColor color = {};
@@ -165,30 +171,77 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    constexpr int width  = 800;      // output image size
+    constexpr int width = 800;
     constexpr int height = 800;
-    constexpr vec3 light{ 1, 1, 1}; // light source 
-    constexpr vec3    eye{ -1, 0, 2}; // camera position
-    constexpr vec3 center{ 0, 0, 0}; // camera direction
-    constexpr vec3     up{ 0, 1, 0}; // camera up vector
+    constexpr int shadowWidth = 2048;
+    constexpr int shadowHeight = 2048;
+    constexpr vec3 lightDirection{1, 1, 1};
+    constexpr vec3 eye{-1, 0, 2};
+    constexpr vec3 center{0, 0, 0};
+    constexpr vec3 up{0, 1, 0};
 
-    /** 
-     * usual rendering
+    std::vector<Model> models;
+    models.reserve(argc - 1);
+    for (int m = 1; m < argc; m++) {
+        models.emplace_back(argv[m]);
+    }
+
+    /**
+     * Shadow pass
      */
-    lookat(eye, center, up);                                   
-    init_perspective(norm(eye-center));                        
-    init_viewport(width/16, height/16, width*7/8, height*7/8); 
+    // Render an orthographic depth map from the directional light.
+    lookat(lightDirection, center, up);
+    init_orthographic();
+    init_viewport(0, 0, shadowWidth, shadowHeight);
+    init_zbuffer(shadowWidth, shadowHeight);
+
+    const mat<4,4> lightModelView = ModelView;
+    const mat<4,4> lightPerspective = Perspective;
+    const mat<4,4> lightViewport = Viewport;
+    TGAImage shadowFramebuffer(shadowWidth, shadowHeight, TGAImage::GRAYSCALE, {0, 0, 0, 0});
+
+    for (const Model &model : models) {
+        BlankShader shader(model);
+        for (int f = 0; f < model.nfaces(); f++) {
+            Triangle clip = {
+                shader.vertex(f, 0),
+                shader.vertex(f, 1),
+                shader.vertex(f, 2)
+            };
+            rasterize(clip, shader, shadowFramebuffer, nullptr, false);
+        }
+    }
+
+    const std::vector<double> shadowDepth = zbuffer;
+    // draw_zbuffer("shadow_depth.tga", shadowDepth, shadowWidth, shadowHeight);
+    draw_zbuffer("shadow_zbuffer.tga", shadowDepth, shadowWidth, shadowHeight);
+
+
+    /**
+     * usual render(camera pass)
+     */
+    // Restore camera state and fill the geometry/material buffers.
+    lookat(eye, center, up);
+    init_perspective(norm(eye-center));
+    init_viewport(width/16, height/16, width*7/8, height*7/8);
     init_zbuffer(width, height);
+
+    const mat<4,4> cameraModelView = ModelView;
+    const mat<4,4> cameraModelViewInv = cameraModelView.invert();
+    const vec3 lightDirectionInCameraView = normalized(
+        (cameraModelView * vec4{lightDirection.x, lightDirection.y, lightDirection.z, 0.}).xyz()
+    );
+
     TGAImage framebuffer(width, height, TGAImage::RGB, {177, 195, 209, 255});
     GBuffer gbuffer(width, height);
-    
-    for(int m = 1; m < argc; m++) {
-        Model model(argv[m]);
-        PhoneShader shader(light, model, eye);
-        for (int f=0; f<model.nfaces(); f++) {      
-            Triangle clip = { shader.vertex(f, 0),  
-                                shader.vertex(f, 1),
-                                shader.vertex(f, 2) };
+    for (const Model &model : models) {
+        PhoneShader shader(lightDirection, model, eye);
+        for (int f = 0; f < model.nfaces(); f++) {
+            Triangle clip = {
+                shader.vertex(f, 0),
+                shader.vertex(f, 1),
+                shader.vertex(f, 2)
+            };
             rasterize(clip, shader, framebuffer, &gbuffer);
         }
     }
@@ -242,7 +295,7 @@ int main(int argc, char** argv) {
                 
                 voters++;
                 
-                const double rangeWeight = smoothstep(0., 1., aoRadius/std::max(dz, 1e-6)); // 降低深度差较大的样本对结果的影响
+                const double rangeWeight = smoothstep(0., 1., aoRadius/std::max(dz, 1e-6)); // 降低深度差较大的样本对结果的影响（深度差大的遮蔽效果差）
                 if (visiblePosition.z > samplePosition.z + aoBias) {
                     occlusion += rangeWeight;
                 }
@@ -259,19 +312,94 @@ int main(int argc, char** argv) {
         for(int y = 0; y < height; y++) {
             const int index = x + y*width;
             const double ssao = aoBuffer[index];
-            TGAColor c = framebuffer.get(x, y);
-            for (int channel=0; channel<3; channel++) {
-                c[channel] = static_cast<std::uint8_t>(std::clamp(c[channel]*ssao, 0., 255.));
-            }
-            framebuffer.set(x, y, c);
-
             TGAColor aoColor = {};
             aoColor[0] = static_cast<std::uint8_t>(std::clamp(ssao*255., 0., 255.));
             aoImage.set(x, y, aoColor);
         }
     }
 
+    /**
+     * Shadow Mapping
+     */
+    // Project camera-visible positions into the light depth map and apply 3x3 PCF.
+    constexpr double minShadowBias = .002;
+    constexpr double slopeShadowBias = .02;
+    std::vector<double> shadowBuffer(width*height, 1.);
+    TGAImage shadowFactorImage(width, height, TGAImage::GRAYSCALE, {255, 255, 255, 255});
+
+#pragma omp parallel for
+    for (int x = 0; x < width; x++) {
+        for (int y = 0; y < height; y++) {
+            const int index = x + y * width;
+            if (!gbuffer.valid[index]) continue;
+
+            const vec3 cameraPosition = gbuffer.viewPosition[index];
+            const vec4 worldPosition = cameraModelViewInv * vec4{
+                cameraPosition.x, cameraPosition.y, cameraPosition.z, 1.
+            };
+            const vec4 lightClip = lightPerspective * lightModelView * worldPosition;
+            if (lightClip.w <= 1e-8) continue;
+
+            const vec4 lightNdc = lightClip / lightClip.w;
+            if (lightNdc.x < -1. || lightNdc.x > 1. ||
+                lightNdc.y < -1. || lightNdc.y > 1.) continue;
+
+            const vec4 lightScreen = lightViewport * lightNdc;
+            const int shadowX = static_cast<int>(std::round(lightScreen.x));
+            const int shadowY = static_cast<int>(std::round(lightScreen.y));
+            const double receiverDepth = lightScreen.z; // 相机(观察空间)看到的表面在光源视角下的深度
+            // calculate shadow bias
+            const double ndotl = std::abs(gbuffer.viewNormal[index] * lightDirectionInCameraView);
+            const double bias = std::max(minShadowBias, slopeShadowBias * (1. - ndotl));
+
+            // use 3x3 PCF to make shadow edge softly
+            double visibility = 0.;
+            int taps = 0;
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    const int sx = shadowX + dx;
+                    const int sy = shadowY + dy;
+                    if (sx < 0 || sy < 0 || sx >= shadowWidth || sy >= shadowHeight) continue;
+
+                    const double blockerDepth = shadowDepth[sx + sy*shadowWidth];  
+                    if (blockerDepth <= -999. || receiverDepth >= blockerDepth - bias) {    // 接受光照
+                        visibility += 1.;
+                    }
+                    taps++;
+                }
+            }
+
+            const double shadowFactor = taps > 0 ? visibility/taps : 1.;
+            shadowBuffer[index] = shadowFactor;
+            TGAColor shadowColor = {};
+            shadowColor[0] = static_cast<std::uint8_t>(
+                std::clamp(shadowFactor*255., 0., 255.)
+            );
+            shadowFactorImage.set(x, y, shadowColor);
+        }
+    }
+
+    /**
+     * illumination Synthesis
+     */
+    // SSAO modulates ambient light; the shadow map modulates only direct light.
+#pragma omp parallel for
+    for (int x = 0; x < width; x++) {
+        for (int y = 0; y < height; y++) {
+            const int index = x + y * width;
+            if (!gbuffer.valid[index]) continue;
+
+            const vec3 finalColor = gbuffer.ambientColor[index] * aoBuffer[index] + gbuffer.directColor[index] * shadowBuffer[index];
+            TGAColor output = {};
+            for (int channel = 0; channel < 3; channel++) {
+                output[channel] = static_cast<std::uint8_t>(std::clamp(finalColor[channel], 0., 255.));
+            }
+            framebuffer.set(x, y, output);
+        }
+    }
+
     aoImage.write_tga_file("ssao.tga");
+    shadowFactorImage.write_tga_file("shadow_factor.tga");
     framebuffer.write_tga_file("framebuffer.tga");
 
     return 0;
