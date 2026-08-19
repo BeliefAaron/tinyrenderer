@@ -7,6 +7,25 @@ void init_perspective(const double f);
 void init_viewport(const int x, const int y, const int w, const int h);
 void init_zbuffer(const int width, const int height);
 
+struct GBuffer {
+    std::vector<vec3> viewPosition;
+    std::vector<vec3> viewNormal;
+    std::vector<std::uint8_t> valid;    // 几何体是否有效
+
+    GBuffer(int width, int height)
+        : viewPosition(width * height),
+          viewNormal(width * height),
+          valid(width * height, 0) {}
+};
+
+struct FragmentOutput {
+    bool discard = false;
+    TGAColor color = {};
+    vec3 viewPosition = {};
+    vec3 aoNormal = {};
+    bool writeGeometry = false;
+};
+
 struct IShader {
     static TGAColor sample2D (const TGAImage &img, const vec2 &uv) {
         if(img.width() == 0 || img.height() == 0) return {};
@@ -16,9 +35,10 @@ struct IShader {
         
         return img.get(x, y);
     }
-    virtual std::pair<bool,TGAColor> fragment(const vec3 bar) const = 0;
+    // virtual std::pair<bool,TGAColor> fragment(const vec3 bar) const = 0;
+    virtual FragmentOutput fragment(const vec3 bar) const = 0;
 };
 
 typedef vec4 Triangle[3]; // a triangle primitive is made of three ordered points
-void rasterize(const Triangle &clip, const IShader &shader, TGAImage &framebuffer);
+void rasterize(const Triangle &clip, const IShader &shader, TGAImage &framebuffer, GBuffer *gbuffer = nullptr);
 

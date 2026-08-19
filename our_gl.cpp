@@ -24,7 +24,7 @@ void init_zbuffer(const int width, const int height) {
     zbuffer = std::vector(width*height, -1000.);
 }
 
-void rasterize(const Triangle &clip, const IShader &shader, TGAImage &framebuffer) {
+void rasterize(const Triangle &clip, const IShader &shader, TGAImage &framebuffer, GBuffer *gbuffer) {
     vec4 ndc[3]    = { clip[0]/clip[0].w, clip[1]/clip[1].w, clip[2]/clip[2].w };                // normalized device coordinates
     vec2 screen[3] = { (Viewport*ndc[0]).xy(), (Viewport*ndc[1]).xy(), (Viewport*ndc[2]).xy() }; // screen coordinates
 
@@ -42,11 +42,26 @@ void rasterize(const Triangle &clip, const IShader &shader, TGAImage &framebuffe
 
             if (bc_screen.x<0 || bc_screen.y<0 || bc_screen.z<0) continue;                                                    // negative barycentric coordinate => the pixel is outside the triangle
             double z = bc_screen * vec3{ ndc[0].z, ndc[1].z, ndc[2].z };  // linear interpolation of the depth
+            int index = x+y*framebuffer.width();
             if (z <= zbuffer[x+y*framebuffer.width()]) continue;   // discard fragments that are too deep w.r.t the z-buffer
-            auto [discard, color] = shader.fragment(bc_clip);
-            if (discard) continue;                                 // fragment shader can discard current fragment
-            zbuffer[x+y*framebuffer.width()] = z;                  // update the z-buffer
-            framebuffer.set(x, y, color);                          // update the framebuffer
+            FragmentOutput output = shader.fragment(bc_clip);
+            if (output.discard) continue;
+            
+            zbuffer[index] = z;
+            framebuffer.set(x, y, output.color);
+
+            if(gbuffer) {
+                if(output.writeGeometry) {
+                    gbuffer->viewPosition[index] = output.viewPosition;
+                    gbuffer->viewNormal[index] = normalized(output.aoNormal);
+                    gbuffer->valid[index] = 1;
+                } else {
+                    gbuffer->viewPosition[index] = {};
+                    gbuffer->viewNormal[index] = {};
+                    gbuffer->valid[index] = 0;
+                }
+            }
+            
         }
     }
 }

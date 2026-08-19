@@ -1,12 +1,18 @@
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <cstdlib>
+#include <iostream>
+#include <random>
+#include <string>
+#include <vector>
+
 #include "our_gl.h"
 #include "model.h"
-#include <string>
-#include <random>
 
 #define M_PI 3.14159265358979323846
 
-extern mat<4,4> Viewport, ModelView, Perspective; // "OpenGL" state matrices and
+extern mat<4,4> Viewport, ModelView, Perspective; // state matrices
 extern std::vector<double> zbuffer;     // the depth buffer
 
 struct PhoneShader : IShader {
@@ -15,43 +21,50 @@ struct PhoneShader : IShader {
     vec4 tri[3];  // triangle in eye coordinates
     vec4 eye;     // camera position in eye coordinates
     vec2 varying_uv[3];
-    vec4 varying_norm[3];
+    vec3 varying_geom_norm[3];
+    mat<4,4> normalMatrix;
 
     PhoneShader(const vec3 &light, const Model &m, const vec3 &e) : model(m) {
         l = normalized((ModelView*vec4{light.x, light.y, light.z, 0.}));  // transform the light vector to view coordinates
         eye = (ModelView * vec4{e.x, e.y, e.z, 1.});
+        normalMatrix = ModelView.invert_transpose();
     }
 
     virtual vec4 vertex(const int face, const int vert) {
         vec4 v = model.vert(face, vert);                          // current vertex in object coordinates
-        vec4 n = model.normal(face, vert);
         vec4 gl_Position = ModelView * vec4{v.x, v.y, v.z, 1.};
         tri[vert] =  gl_Position;                            // in eye coordinates
         varying_uv[vert] = model.uv(face, vert);
-        varying_norm[vert] = ModelView.invert_transpose() * model.normal(face, vert);
+        varying_geom_norm[vert] = normalized((normalMatrix * model.normal(face, vert)).xyz());
         return Perspective * gl_Position;                         // in clip coordinates
     }
 
-    virtual std::pair<bool,TGAColor> fragment(const vec3 bar) const {
+    FragmentOutput fragment(const vec3 bar) const {
+        vec3 aoNormal = normalized(varying_geom_norm[0] * bar[0]
+                                 + varying_geom_norm[1] * bar[1]
+                                 + varying_geom_norm[2] * bar[2]);
+
         mat<2,4> E = {tri[1] - tri[0], tri[2] - tri[0]};
         mat<2,2> U = {varying_uv[1] - varying_uv[0], varying_uv[2] - varying_uv[0]};
         mat<2,4> T = U.invert() * E;
         mat<4,4> tanBaseTran = {normalized(T[0]),
                                 normalized(T[1]),
-                                normalized(varying_norm[0] * bar[0] + varying_norm[1] * bar[1] + varying_norm[2] * bar[2]),
+                                {aoNormal.x, aoNormal.y, aoNormal.z, 0},
                                 {0, 0, 0, 1.}};
 
         vec2 uv = varying_uv[0] * bar[0] + varying_uv[1] * bar[1] + varying_uv[2] * bar[2];
         vec4 n = normalized(tanBaseTran.transpose() * model.normal(uv));
-        vec4 r = normalized(2*n*(n*l) - l);   // 反射光向量
+        vec4 r = normalized(2*n*(n*l) - l);
         vec4 fragPos = tri[0] * bar.x + tri[1] * bar.y + tri[2] * bar.z;
-        
         vec4 viewDir = normalized(eye - fragPos);
 
-        double ambient = 0.4; // 环境光
-        double diffuse = std::max(0., n*l); // 漫反射强度
+        // A visible surface should expose its outward hemisphere to the camera.
+        if (aoNormal * viewDir.xyz() < 0) aoNormal = aoNormal * -1.;
+
+        double ambient = 0.4;
+        double diffuse = std::max(0., n*l);
         double specularMask = sample2D(model.specular(), uv)[0] / 255.;
-        double specular = specularMask * std::pow(std::max(0., r * viewDir), 32); // 镜面反射强度，因为相机在相机坐标系中的z轴正方向，所以取r * viewDir作为视线方向与反射光的夹角余弦值
+        double specular = specularMask * std::pow(std::max(0., r * viewDir), 32);
         double illumination = ambient + diffuse + specular;
 
         TGAColor fragColor = sample2D(model.diffuse(), uv);
@@ -60,7 +73,7 @@ struct PhoneShader : IShader {
             double value = fragColor[channel] * illumination;
             fragColor[channel] = static_cast<uint8_t>(std::clamp(value, 0.0, 255.0));
         }
-        return {false, fragColor};                                    // do not discard the pixel
+        return {false, fragColor, fragPos.xyz(), aoNormal, true};
     }
 };
 
@@ -75,10 +88,47 @@ struct BlankShader : IShader {
         return Perspective * gl_Position;
     }
 
-    virtual std::pair<bool,TGAColor> fragment(const vec3 bar) const {
-        return {false, {255, 255, 255, 255}};
+    virtual FragmentOutput fragment(const vec3 bar) const {
+        FragmentOutput output;
+        output.color = {255, 255, 255, 255};
+        return output;
     }
 };
+
+std::vector<vec3> make_ssao_kernel(const int samples) {
+    std::mt19937 generator(0x5A17u);
+    std::uniform_real_distribution<double> random01(0., 1.);
+    std::vector<vec3> kernel;
+    kernel.reserve(samples);    
+
+    for (int i=0; i<samples; i++) {
+        const double u1 = random01(generator);
+        const double u2 = random01(generator);
+        const double r = std::sqrt(u1);     // 璁╂洿澶氭牱鏈泦涓湪鍗婄悆娉曠嚎闄勮繎
+        const double phi = 2.*M_PI*u2;
+        vec3 sample = {r*std::cos(phi), r*std::sin(phi), std::sqrt(1.-u1)};
+
+        const double t = static_cast<double>(i+1)/samples;  // 浣块噰鏍风偣杩戝瘑杩滅枏
+        const double scale = .1 + .9*t*t;                   // 鎻愰珮杩戣窛绂婚伄鎸＄殑璐＄尞
+        kernel.push_back(sample*scale);
+    }
+    return kernel;
+}
+
+// 闅忔満鏃嬭浆ssao閲囨牱鏍革紝璁╂瘡涓猵ixel鏈変笉鍚岀殑閲囨牱鏃嬭浆
+double pixel_rotation(const int x, const int y) {
+    std::uint32_t hash = static_cast<std::uint32_t>(x)*0x8da6b343u
+                       ^ static_cast<std::uint32_t>(y)*0xd8163841u;
+    hash ^= hash >> 16;
+    hash *= 0x7feb352du;
+    hash ^= hash >> 15;
+    return (static_cast<double>(hash)/static_cast<double>(UINT32_MAX))*2.*M_PI;
+}
+
+double smoothstep(const double edge0, const double edge1, const double x) {
+    const double t = std::clamp((x-edge0)/(edge1-edge0), 0., 1.);
+    return t*t*(3.-2.*t);
+}
 
 void draw_zbuffer(std::string filename, std::vector<double> &zbuffer, int width, int height) {
     TGAImage zImg(width, height, TGAImage::GRAYSCALE, {0,0,0,0});
@@ -130,61 +180,98 @@ int main(int argc, char** argv) {
     init_viewport(width/16, height/16, width*7/8, height*7/8); 
     init_zbuffer(width, height);
     TGAImage framebuffer(width, height, TGAImage::RGB, {177, 195, 209, 255});
+    GBuffer gbuffer(width, height);
     
     for(int m = 1; m < argc; m++) {
         Model model(argv[m]);
-        // PhoneShader shader(light, model, eye);
-        BlankShader shader(model);
+        PhoneShader shader(light, model, eye);
         for (int f=0; f<model.nfaces(); f++) {      
             Triangle clip = { shader.vertex(f, 0),  
                                 shader.vertex(f, 1),
                                 shader.vertex(f, 2) };
-            rasterize(clip, shader, framebuffer);   
+            rasterize(clip, shader, framebuffer, &gbuffer);
         }
     }
 
     /**
      * SSAO
      */
-    constexpr double aoRadius = .1;
+    constexpr double aoRadius = .12;
+    constexpr double aoBias = .01;
+    constexpr double aoStrength = 1.;
     constexpr int samples = 128;
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_real_distribution<double> dist(-aoRadius, aoRadius);
-
-    auto smoothstep = [](double edge0, double edge1, double x) {         
-            double t = std::clamp((x - edge0)/(edge1 - edge0), 0., 1.);  
-            return t*t*(3 - 2*t);                                        // Hermite interpolation inbetween. The derivative of the smoothstep function is zero at both edges.
-    };
+    const std::vector<vec3> kernel = make_ssao_kernel(samples);
+    std::vector<double> aoBuffer(width*height, 1.); // store ao value(visibility)
 
 #pragma omp parallel for
     for(int x = 0; x < width; x++) {
         for(int y = 0; y < height; y++) {
-            double z = zbuffer[x + y*width];
-            if(z < -100) continue;
-            vec4 p = Viewport.invert() * vec4(x, y, z, 1.);  // for each pixel, project to object coordinate system 
-            double vote = 0;
-            double voters = 0;
-            for(int i = 0; i < samples; i++) {
-                vec4 sample = Viewport * (p + vec4(dist(gen), dist(gen), dist(gen), 0));    // then get samples randomly
-                if(sample.x < 0 || sample.y < 0 || sample.x >= width || sample.y >=height) continue;
-                double zp = zbuffer[(int)sample.x + (int)sample.y * width]; // get the scene's nearest depth at sample location from zbuffer
-                if(z + 5 * aoRadius < zp) continue;                       // range check to remove the dark halo
+            const int index = x + y * width;
+            if (!gbuffer.valid[index]) continue;
+
+            const vec3 p = gbuffer.viewPosition[index];
+            const vec3 n = normalized(gbuffer.viewNormal[index]);
+            const vec3 helper = std::abs(n.z) < .999 ? vec3{0, 0, 1} : vec3{0, 1, 0};   // in case n = (0,0,1)
+            const vec3 tangent = normalized(cross(helper, n));
+            const vec3 bitangent = cross(n, tangent);   // build TBN for sample local coordinate to fragment's view space
+            const double angle = pixel_rotation(x, y);
+            const double cosAngle = std::cos(angle);
+            const double sinAngle = std::sin(angle);
+
+            double occlusion = 0.;
+            int voters = 0;
+            for(const vec3 &localSample : kernel) {
+                const double rotatedX = localSample.x*cosAngle - localSample.y*sinAngle;
+                const double rotatedY = localSample.x*sinAngle + localSample.y*cosAngle;
+                const vec3 sampleDirection = tangent*rotatedX + bitangent*rotatedY + n*localSample.z;
+                const vec3 samplePosition = p + sampleDirection*aoRadius;
+
+                const vec4 clip = Perspective * vec4{samplePosition.x, samplePosition.y, samplePosition.z, 1.};
+                if (clip.w <= 1e-8) continue;   
+                const vec4 screen = Viewport * (clip/clip.w);
+                const int sampleX = static_cast<int>(std::round(screen.x));
+                const int sampleY = static_cast<int>(std::round(screen.y));
+                if(sampleX < 0 || sampleY < 0 || sampleX >= width || sampleY >= height) continue;
+
+                const int sampleIndex = sampleX + sampleY*width;
+                if (!gbuffer.valid[sampleIndex]) continue;
+
+                const vec3 visiblePosition = gbuffer.viewPosition[sampleIndex];
+                const double dz = std::abs(visiblePosition.z-p.z);
+                if (dz > aoRadius) continue;
+                
                 voters++;
-                vote += zp > sample.z;  // get masked
+                
+                const double rangeWeight = smoothstep(0., 1., aoRadius/std::max(dz, 1e-6)); // 闄嶄綆娣卞害宸緝澶х殑鏍锋湰瀵圭粨鏋滅殑褰卞搷
+                if (visiblePosition.z > samplePosition.z + aoBias) {
+                    occlusion += rangeWeight;
+                }
             }
-            // calculate ssao value and apply it on color
-            double ssao = 1.0;
-            if(voters > 0) {
-                double occlusion = vote / voters * 0.4;
-                ssao = smoothstep(0, 1, 1 - occlusion);
-            }
-            TGAColor c = framebuffer.get(x, y);
-            c[0] *= ssao; c[1] *= ssao; c[2] *= ssao;
-            framebuffer.set(x, y, c);
+
+            const double visibility = voters > 0 ? 1.-occlusion/voters : 1.;
+            aoBuffer[index] = std::pow(std::clamp(visibility, 0., 1.), aoStrength);
         }
     }
 
+    TGAImage aoImage(width, height, TGAImage::GRAYSCALE, {255, 255, 255, 255});
+#pragma omp parallel for
+    for(int x = 0; x < width; x++) {
+        for(int y = 0; y < height; y++) {
+            const int index = x + y*width;
+            const double ssao = aoBuffer[index];
+            TGAColor c = framebuffer.get(x, y);
+            for (int channel=0; channel<3; channel++) {
+                c[channel] = static_cast<std::uint8_t>(std::clamp(c[channel]*ssao, 0., 255.));
+            }
+            framebuffer.set(x, y, c);
+
+            TGAColor aoColor = {};
+            aoColor[0] = static_cast<std::uint8_t>(std::clamp(ssao*255., 0., 255.));
+            aoImage.set(x, y, aoColor);
+        }
+    }
+
+    aoImage.write_tga_file("ssao.tga");
     framebuffer.write_tga_file("framebuffer.tga");
 
     return 0;

@@ -6,6 +6,8 @@ mask.tga
 shadow_zbuffer.tga
 shadow.tga
 shadowmap.tga
+ssao.tga
+solution.txt
 
 
 .vs/
