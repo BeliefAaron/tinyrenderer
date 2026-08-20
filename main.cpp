@@ -64,7 +64,10 @@ struct PhoneShader : IShader {
         double ambient = 0.4;
         double diffuse = std::max(0., n*l);
         double specularMask = sample2D(model.specular(), uv)[0] / 255.;
-        double specular = specularMask * std::pow(std::max(0., r * viewDir), 32);
+        // double specular = specularMask * std::pow(std::max(0., r * viewDir), 32);   // Phong 光照模型
+        vec4 halfDir = normalized(l + viewDir);
+        double specular = specularMask * std::pow(std::max(0., n * halfDir), 32);   // Blinn-Phong 光照模型  
+        
         TGAColor texel = sample2D(model.diffuse(), uv);
         vec3 albedo = {     // 反射率(物体固有颜色)
             static_cast<double>(texel[0]),
